@@ -181,6 +181,33 @@ def test_remaining_energy_compensation():
     assert main.energy_model.remaining_energy_compensation(40.0, volym=750.0) == 7.5
 
 
+def test_energy_model_app_initializes_daily_schedule(monkeypatch):
+    class DummyAd:
+        def __init__(self):
+            self.scheduled = []
+
+        def run_daily(self, callback, time, **kwargs):
+            self.scheduled.append((callback, time, kwargs))
+
+    called = []
+    def fake_main(*args, **kwargs):
+        called.append((args, kwargs))
+
+    monkeypatch.setattr(main, "main", fake_main)
+    ad = DummyAd()
+
+    app = main.EnergyModelApp(ad, "energy_app")
+
+    assert len(ad.scheduled) == 1
+    callback, scheduled_time, kwargs = ad.scheduled[0]
+    assert scheduled_time == datetime.time(18, 0, 0)
+    assert kwargs == {}
+
+    callback()
+    assert called == [((), {})]
+    assert app.name == "energy_app"
+
+
 def test_main_uses_energy_model_prediction(monkeypatch, caplog):
     tomorrow = datetime.date.today() + datetime.timedelta(days=1)
     forecast = [

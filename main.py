@@ -1,16 +1,72 @@
 import datetime
 import logging
 import math
+from types import SimpleNamespace
+
 import requests
 import energy_model
+
+try:
+  from appdaemon.plugins.hass.hassapi import Hass
+except Exception:
+  class Hass:
+    pass
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger(__name__)
 state = None
 
 
+class AppDaemonState:
+  def __init__(self, app):
+    self.app = app
+
+  def get(self, entity_id):
+    entity = self.app.get_state(entity_id)
+    if entity is None:
+      return None
+    if hasattr(entity, "state") and hasattr(entity, "attributes"):
+      return entity
+    if isinstance(entity, dict):
+      attrs = entity.get("attributes", {}) or {}
+      if not hasattr(attrs, "get"):
+        attrs = dict(attrs)
+      return SimpleNamespace(state=entity.get("state"), attributes=SimpleNamespace(**attrs))
+    return entity
+
+
+class EnergyModelApp(Hass):
+  def __init__(self, ad=None, name=None, *args, **kwargs):
+    self.ad = ad
+    self.name = name or "energy_model"
+    if ad is None:
+      super().__init__(*args, **kwargs)
+      self.name = name or self.__class__.__name__
+    else:
+      self.initialize()
+
+  def initialize(self):
+    if self.ad is not None:
+      self.ad.run_daily(self._run, datetime.time(18, 0, 0))
+    else:
+      self.run_daily(self._run, datetime.time(18, 0, 0))
+
+  def _run(self, *args, **kwargs):
+    global state
+    if hasattr(self, "get_state") and callable(self.get_state):
+      state = AppDaemonState(self)
+    main()
+
+
+def get_state_entity(entity_id):
+  if state is None:
+    logger.error("Ingen state-anslutning tillgänglig")
+    return None
+  return state.get(entity_id)
+
+
 def get_start_temp():
-  sensor = state.get("sensor.ack_tank_temp")
+  sensor = get_state_entity("sensor.ack_tank_temp")
   if sensor is None:
     logger.error("Sensor sensor.ack_tank_temp finns inte")
     return None
@@ -40,7 +96,7 @@ def parse_timestamp(value):
 
 
 def get_tomorrow_forecast_features(weather_entity_id="weather.home"):
-  entity = state.get(weather_entity_id)
+  entity = get_state_entity(weather_entity_id)
   if entity is None:
     logger.error(f"Weather entity {weather_entity_id} finns inte")
     return None
@@ -140,7 +196,7 @@ def lookup_daily_energy(mean_temp, volym=750.0):
 
 
 def get_previous_predicted(previous_predicted_entity="input_number.previous_predicted"):
-  entity = state.get(previous_predicted_entity)
+  entity = get_state_entity(previous_predicted_entity)
   if entity is None:
     logger.info(f"Ingen tidigare prediktion hittades i {previous_predicted_entity}")
     return None
@@ -163,7 +219,7 @@ def get_previous_training_features(prefix="input_number.previous"):
   }
   features = {}
   for name, entity_id in keys.items():
-    entity = state.get(entity_id)
+    entity = get_state_entity(entity_id)
     if entity is None:
       return None
     if getattr(entity, "state", None) in ("unknown", "unavailable", "None", ""):
