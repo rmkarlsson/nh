@@ -78,7 +78,44 @@ def test_main_schedules_activation_for_selected_periods(monkeypatch):
 
     main.main(elomrade="SE3", app=app, active_entity="input_boolean.heating_active")
 
-    assert len(app.scheduled) == 2
+    # Efter ändring: intilliggande 15-minutersperioder slås ihop till
+    # en kontinuerlig aktivering. De två perioderna ovan blir ett intervall.
+    assert len(app.scheduled) == 1
     assert app.scheduled[0][2] == "input_boolean.heating_active"
     assert app.scheduled[0][0] == datetime.datetime(2026, 8, 5, 0, 0, 0)
-    assert app.scheduled[0][1] == datetime.datetime(2026, 8, 5, 0, 15, 0)
+    assert app.scheduled[0][1] == datetime.datetime(2026, 8, 5, 0, 30, 0)
+
+
+def test_main_merges_12_quarters_into_single_3h_activation(monkeypatch):
+    # Skapa 12 intilliggande 15-minutersperioder (totalt 3 timmar).
+    # Bygg start- och end-tid genom att addera 15-minuterssteg så att
+    # timövergångar hanteras korrekt.
+    base = datetime.datetime(2026, 8, 5, 0, 0, tzinfo=datetime.timezone.utc)
+    prices = []
+    for i in range(12):
+        start_dt = base + datetime.timedelta(minutes=15 * i)
+        end_dt = start_dt + datetime.timedelta(minutes=15)
+        # Gör priserna varierande: dyrast först, billigast sist.
+        price = float(12 - i)
+        prices.append({
+            "time_start": start_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "time_end": end_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "SEK_per_kWh": price,
+        })
+
+    class DummyApp:
+        def __init__(self):
+            self.scheduled = []
+
+        def schedule_activation(self, start_dt, end_dt, active_entity):
+            self.scheduled.append((start_dt, end_dt, active_entity))
+
+    monkeypatch.setattr(main.requests, "get", lambda url: DummyResponse(200, prices))
+    app = DummyApp()
+
+    main.main(elomrade="SE3", app=app, active_entity="input_boolean.heating_active")
+
+    assert len(app.scheduled) == 1
+    start, end, entity = app.scheduled[0]
+    assert entity == "input_boolean.heating_active"
+    assert end - start == datetime.timedelta(hours=3)
